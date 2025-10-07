@@ -1,3 +1,4 @@
+import 'dart:convert'; // <-- ДОБАВЛЕНО для UTF-8
 import 'dart:io';
 import 'dart:math' as math;
 
@@ -356,7 +357,33 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
     _saveTransactions();
   }
 
-  // ✅ ПЕРЕНОС ЗАПИСИ В ДРУГОЙ МЕСЯЦ
+  // ✅ НОВЫЙ МЕТОД: ПЕРЕНОС В СЛЕДУЮЩИЙ МЕСЯЦ
+  void _moveTransactionToNextMonth(Transaction tx) {
+    final currentMonth = _months[_tabController.index];
+    final nextMonth = _addMonths(currentMonth, 1);
+
+    final newDay = math.min(tx.date.day, _daysInMonth(nextMonth.year, nextMonth.month));
+    final newTx = Transaction(
+      title: tx.title,
+      income: tx.income,
+      expense: tx.expense,
+      date: DateTime(nextMonth.year, nextMonth.month, newDay),
+      isRecurring: tx.isRecurring,
+      order: tx.order,
+    );
+
+    setState(() {
+      _transactions.remove(tx);
+      _transactions.add(newTx);
+    });
+    _saveTransactions();
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Запись перенесена в ${_formatMonthName(nextMonth)}')),
+    );
+  }
+
+  // ОСТАВЛЕН ДЛЯ МЕНЮ "ПЕРЕНЕСТИ В ДРУГОЙ МЕСЯЦ"
   Future<void> _moveTransactionToAnotherMonth(Transaction tx) async {
     final now = DateTime.now();
     final months = List.generate(12, (i) => DateTime(now.year, i + 1, 1));
@@ -374,7 +401,7 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
                 children: [
                   for (var month in months)
                     ListTile(
-                      title: Text(_formatMonthName(month)), // ✅ "январь", "февраль"
+                      title: Text(_formatMonthName(month)),
                       onTap: () => Navigator.of(ctx).pop(month),
                     ),
                 ],
@@ -446,7 +473,7 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
     }
   }
 
-  // ✅ ЭКСПОРТ В CSV (УПРОЩЁННЫЙ)
+  // ✅ ЭКСПОРТ С UTF-8 BOM (чтобы Excel читал кириллицу)
   Future<void> _exportToCSV() async {
     try {
       final buffer = StringBuffer();
@@ -479,7 +506,12 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
 
       final dir = await getApplicationDocumentsDirectory();
       final file = File('${dir.path}/budget_export.csv');
-      await file.writeAsString(buffer.toString());
+
+      // ✅ ДОБАВЛЕН BOM ДЛЯ EXCEL
+      final content = buffer.toString();
+      final bytes = utf8.encode(content);
+      final bom = [0xEF, 0xBB, 0xBF]; // UTF-8 BOM
+      await file.writeAsBytes(bom + bytes);
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Экспорт завершён. Файл: ${file.path}')),
@@ -760,14 +792,10 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
 
-    // Текущий месяц (выбранный в табе)
     final currentMonth = _months[_tabController.index];
-    // Следующий месяц
     final nextMonth = _addMonths(currentMonth, 1);
-
     final today = DateTime.now();
 
-    // Транзакции для текущего месяца
     final regularTransactionsCurrent = _transactions
         .where((tx) =>
             tx.date.year == currentMonth.year &&
@@ -776,7 +804,6 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
         .toList()
       ..sort((a, b) => a.order.compareTo(b.order));
 
-    // Транзакции для следующего месяца
     final regularTransactionsNext = _transactions
         .where((tx) =>
             tx.date.year == nextMonth.year &&
@@ -785,7 +812,6 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
         .toList()
       ..sort((a, b) => a.order.compareTo(b.order));
 
-    // Постоянные записи для текущего месяца
     final recurringExpensesCurrent = _recurringExpenses.map((tx) {
       return Transaction(
         title: tx.title,
@@ -806,7 +832,6 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
       );
     }).toList();
 
-    // Постоянные записи для следующего месяца
     final recurringExpensesNext = _recurringExpenses.map((tx) {
       return Transaction(
         title: tx.title,
@@ -827,7 +852,6 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
       );
     }).toList();
 
-    // Итоги
     final balanceCurrent = [...regularTransactionsCurrent, ...recurringExpensesCurrent, ...recurringIncomesCurrent]
         .fold(0.0, (sum, tx) => sum + tx.income - tx.expense);
     final balanceNext = [...regularTransactionsNext, ...recurringExpensesNext, ...recurringIncomesNext]
@@ -974,11 +998,9 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
                 ),
               ),
 
-            // ✅ ДВА МЕСЯЦА РЯДОМ С РЕАЛЬНЫМИ НАЗВАНИЯМИ
             Expanded(
               child: Row(
                 children: [
-                  // Текущий месяц
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -986,7 +1008,7 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
                         Padding(
                           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                           child: Text(
-                            _formatMonthName(currentMonth), // ✅ "январь"
+                            _formatMonthName(currentMonth),
                             style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
                           ),
                         ),
@@ -1078,6 +1100,13 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
                                             ],
                                           ),
                                           const SizedBox(width: 12),
+                                          // ✅ ДОБАВЛЕНА КНОПКА →
+                                          if (!regularTransactionsCurrent[i].isRecurring)
+                                            IconButton(
+                                              icon: const Icon(Icons.arrow_forward, size: 18, color: Colors.blue),
+                                              onPressed: () => _moveTransactionToNextMonth(regularTransactionsCurrent[i]),
+                                              tooltip: 'Перенести в следующий месяц',
+                                            ),
                                           if (!regularTransactionsCurrent[i].isRecurring)
                                             IconButton(
                                               icon: const Icon(Icons.more_vert),
@@ -1115,7 +1144,6 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
 
                   const VerticalDivider(width: 1, thickness: 1),
 
-                  // Следующий месяц
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1123,7 +1151,7 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
                         Padding(
                           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                           child: Text(
-                            _formatMonthName(nextMonth), // ✅ "февраль"
+                            _formatMonthName(nextMonth),
                             style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
                           ),
                         ),
