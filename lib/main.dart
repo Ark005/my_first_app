@@ -12,20 +12,18 @@ import 'package:shared_preferences/shared_preferences.dart';
 // === ИНИЦИАЛИЗАЦИЯ ===
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  // Инициализация форматирования дат на русском языке
   await initializeDateFormatting('ru_RU', null);
   runApp(const BudgetApp());
 }
 
 // === МОДЕЛЬ ТРАНЗАКЦИИ ===
-// Хранит все данные одной записи: название, доход/расход, дата, постоянная ли, порядок
 class Transaction {
   String title;
   double income;
   double expense;
   DateTime date;
-  bool isRecurring; // true — постоянная запись (доход/расход)
-  int order;        // порядок для drag-and-drop
+  bool isRecurring;
+  int order;
 
   Transaction({
     required this.title,
@@ -36,12 +34,10 @@ class Transaction {
     this.order = 0,
   });
 
-  // Преобразует объект в строку для сохранения в SharedPreferences
   String toStorageString() {
     return '${date.millisecondsSinceEpoch}|$title|$income|$expense|$isRecurring|$order';
   }
 
-  // Восстанавливает объект из строки
   static Transaction fromStorageString(String s) {
     final parts = s.split('|');
     final order = parts.length > 5 ? int.tryParse(parts[5]) ?? 0 : 0;
@@ -82,12 +78,12 @@ class BudgetPage extends StatefulWidget {
 }
 
 class _BudgetPageState extends State<BudgetPage> {
-  // === ХРАНИЛИЩА ДАННЫХ ===
-  final List<Transaction> _transactions = [];         // обычные записи
-  final List<Transaction> _recurringExpenses = [];    // постоянные расходы
-  final List<Transaction> _recurringIncomes = [];     // постоянные доходы
+  // === ДАННЫЕ ===
+  final List<Transaction> _transactions = [];
+  final List<Transaction> _recurringExpenses = [];
+  final List<Transaction> _recurringIncomes = [];
 
-  // === КОНТРОЛЛЕРЫ ПОЛЕЙ ВВОДА ===
+  // === КОНТРОЛЛЕРЫ ===
   final TextEditingController _titleController = TextEditingController();
   final TextEditingController _incomeController = TextEditingController();
   final TextEditingController _expenseController = TextEditingController();
@@ -95,31 +91,25 @@ class _BudgetPageState extends State<BudgetPage> {
 
   final TextEditingController _recTitleController = TextEditingController();
   final TextEditingController _recAmountController = TextEditingController();
-  bool _isRecurringIncome = true; // true = доход, false = расход
+  bool _isRecurringIncome = true;
 
-  // === СОСТОЯНИЕ РЕДАКТИРОВАНИЯ ПОСТОЯННЫХ ЗАПИСЕЙ ===
   bool _isEditingRecurring = false;
   int? _editingRecurringIndex;
   bool _isEditingRecurringIsIncome = true;
 
-  // === ФЛАГ ИНИЦИАЛИЗАЦИИ ===
   bool _isInitialized = false;
 
-  // === ТЕКУЩИЙ МЕСЯЦ (управляемое состояние) ===
-  // Отображается слева. Справа — следующий месяц.
-  DateTime _currentMonth = DateTime(DateTime.now().year, DateTime.now().month, 1);
+  // === PAGEVIEW ===
+  late PageController _pageController;
+  int _currentPageIndex = 0; // индекс текущей страницы (0 = текущий месяц)
 
-  // Вспомогательное свойство: следующий месяц
-  DateTime get _nextMonth => _addMonths(_currentMonth, 1);
-
-  // === ИНИЦИАЛИЗАЦИЯ ===
   @override
   void initState() {
     super.initState();
+    _pageController = PageController(initialPage: 0);
     _loadAndInit();
   }
 
-  // Загружает данные и помечает приложение как готовое
   Future<void> _loadAndInit() async {
     await _loadTransactions();
     setState(() {
@@ -127,22 +117,9 @@ class _BudgetPageState extends State<BudgetPage> {
     });
   }
 
-  // === НАВИГАЦИЯ ПО МЕСЯЦАМ ===
-  void _moveToPreviousPair() {
-    setState(() {
-      _currentMonth = _addMonths(_currentMonth, -1);
-    });
-  }
-
-  void _moveToNextPair() {
-    setState(() {
-      _currentMonth = _addMonths(_currentMonth, 1);
-    });
-  }
-
-  // === ОЧИСТКА РЕСУРСОВ ===
   @override
   void dispose() {
+    _pageController.dispose();
     _titleController.dispose();
     _incomeController.dispose();
     _expenseController.dispose();
@@ -179,7 +156,7 @@ class _BudgetPageState extends State<BudgetPage> {
     }
   }
 
-  // === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ ДАТ ===
+  // === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДАТ ===
   int _daysInMonth(int year, int month) {
     if (month == 2) return _isLeapYear(year) ? 29 : 28;
     return [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1];
@@ -189,7 +166,6 @@ class _BudgetPageState extends State<BudgetPage> {
     return (year % 4 == 0) && (year % 100 != 0 || year % 400 == 0);
   }
 
-  // Добавляет N месяцев к дате (корректно обрабатывает переходы через год)
   DateTime _addMonths(DateTime date, int months) {
     final year = date.year + ((date.month + months - 1) ~/ 12);
     final month = ((date.month + months - 1) % 12) + 1;
@@ -197,6 +173,22 @@ class _BudgetPageState extends State<BudgetPage> {
     final daysInNewMonth = _daysInMonth(year, month);
     final newDay = day > daysInNewMonth ? daysInNewMonth : day;
     return DateTime(year, month, newDay);
+  }
+
+  String _getMonthNameInNominative(DateTime date) {
+    return '${DateFormat('MMMM', 'ru_RU').format(date)} ${date.year}';
+  }
+
+  // === ПОЛУЧЕНИЕ МЕСЯЦЕВ ДЛЯ СТРАНИЦЫ ===
+  // Страница 0 → (сегодняшний месяц, следующий)
+  // Страница 1 → (следующий, через месяц)
+  // Страница -1 → (прошлый, сегодняшний)
+  List<DateTime> _getMonthsForPage(int pageIndex) {
+    final now = DateTime.now();
+    final baseMonth = DateTime(now.year, now.month, 1);
+    final offsetMonth = _addMonths(baseMonth, pageIndex);
+    final nextMonth = _addMonths(offsetMonth, 1);
+    return [offsetMonth, nextMonth];
   }
 
   // === UI: ВЫБОР ДАТЫ ===
@@ -213,7 +205,7 @@ class _BudgetPageState extends State<BudgetPage> {
     }
   }
 
-  // === ДОБАВЛЕНИЕ ОБЫЧНОЙ ТРАНЗАКЦИИ ===
+  // === ДОБАВЛЕНИЕ ТРАНЗАКЦИИ ===
   void _addTransaction() {
     final title = _titleController.text.trim();
     final income = double.tryParse(_incomeController.text) ?? 0.0;
@@ -223,14 +215,15 @@ class _BudgetPageState extends State<BudgetPage> {
       return;
     }
 
-    // Определяем, в какой из двух видимых месяцев добавлять запись
+    // Получаем текущую пару месяцев
+    final months = _getMonthsForPage(_currentPageIndex);
     DateTime targetMonth;
-    if (_selectedDate.year == _currentMonth.year && _selectedDate.month == _currentMonth.month) {
-      targetMonth = _currentMonth;
-    } else if (_selectedDate.year == _nextMonth.year && _selectedDate.month == _nextMonth.month) {
-      targetMonth = _nextMonth;
+    if (_selectedDate.year == months[0].year && _selectedDate.month == months[0].month) {
+      targetMonth = months[0];
+    } else if (_selectedDate.year == months[1].year && _selectedDate.month == months[1].month) {
+      targetMonth = months[1];
     } else {
-      targetMonth = _currentMonth; // по умолчанию — текущий
+      targetMonth = months[0];
     }
 
     final day = math.min(_selectedDate.day, _daysInMonth(targetMonth.year, targetMonth.month));
@@ -254,7 +247,7 @@ class _BudgetPageState extends State<BudgetPage> {
     _saveTransactions();
   }
 
-  // === РАБОТА С ПОСТОЯННЫМИ ЗАПИСЯМИ ===
+  // === ПОСТОЯННЫЕ ЗАПИСИ ===
   void _addRecurring() {
     final title = _recTitleController.text.trim();
     final amount = double.tryParse(_recAmountController.text) ?? 0.0;
@@ -340,15 +333,14 @@ class _BudgetPageState extends State<BudgetPage> {
     _saveTransactions();
   }
 
-  // === УДАЛЕНИЕ ОБЫЧНОЙ ТРАНЗАКЦИИ ===
+  // === УДАЛЕНИЕ И ПЕРЕНОС ТРАНЗАКЦИЙ ===
   void _deleteTransaction(Transaction tx) {
     setState(() { _transactions.remove(tx); });
     _saveTransactions();
   }
 
-  // === ПЕРЕНОС ТРАНЗАКЦИИ МЕЖДУ ДВУМЯ ВИДИМЫМИ МЕСЯЦАМИ ===
   Future<void> _moveTransactionToAnotherMonth(Transaction tx) async {
-    final months = [_currentMonth, _nextMonth];
+    final months = _getMonthsForPage(_currentPageIndex);
     final result = await showDialog<DateTime?>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -395,7 +387,7 @@ class _BudgetPageState extends State<BudgetPage> {
     );
   }
 
-  // === ОЧИСТКА ВСЕХ ДАННЫХ ===
+  // === ОЧИСТКА, ЭКСПОРТ, ИМПОРТ ===
   Future<void> _clearAllData() async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -420,7 +412,6 @@ class _BudgetPageState extends State<BudgetPage> {
     }
   }
 
-  // === ЭКСПОРТ В CSV ===
   Future<void> _exportToCSV() async {
     final buffer = StringBuffer();
     buffer.writeln('"Дата","Название","Доход","Расход","Постоянная"');
@@ -441,7 +432,6 @@ class _BudgetPageState extends State<BudgetPage> {
       final file = File('${dir.path}/budget_export.csv');
       await file.writeAsString(buffer.toString());
 
-      // На macOS копируем в папку Загрузок для удобства
       if (Platform.isMacOS) {
         final user = Platform.environment['USER'] ?? 'Shared';
         final downloadsDir = Directory('/Users/$user/Downloads');
@@ -459,7 +449,6 @@ class _BudgetPageState extends State<BudgetPage> {
     }
   }
 
-  // === ИМПОРТ ИЗ CSV ===
   Future<void> _importFromCSV() async {
     try {
       final result = await FilePicker.platform.pickFiles(type: FileType.custom, allowedExtensions: ['csv']);
@@ -474,7 +463,6 @@ class _BudgetPageState extends State<BudgetPage> {
       final List<Transaction> newRecurringExpenses = [];
 
       for (int i = 1; i < lines.length; i++) {
-        // Поддержка CSV с запятыми и точками с запятой
         List<String> cells = lines[i].contains(';') ? lines[i].split(';') : lines[i].split(',');
         if (cells.length < 5) continue;
 
@@ -515,7 +503,6 @@ class _BudgetPageState extends State<BudgetPage> {
         }
       }
 
-      // Обновляем состояние и сохраняем
       setState(() {
         _transactions.clear();
         _transactions.addAll(newTransactions);
@@ -532,10 +519,13 @@ class _BudgetPageState extends State<BudgetPage> {
     }
   }
 
-  // === ПЕРЕНОС ИТОГА ТЕКУЩЕГО МЕСЯЦА В СЛЕДУЮЩИЙ ===
+  // === ПЕРЕНОС ИТОГА ===
   void _shiftCurrentMonthForward() {
+    final months = _getMonthsForPage(_currentPageIndex);
+    final currentMonth = months[0];
+
     final currentTransactions = _transactions.where((tx) =>
-        tx.date.year == _currentMonth.year && tx.date.month == _currentMonth.month).toList();
+        tx.date.year == currentMonth.year && tx.date.month == currentMonth.month).toList();
 
     if (currentTransactions.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Нет записей для переноса')));
@@ -548,26 +538,22 @@ class _BudgetPageState extends State<BudgetPage> {
       return;
     }
 
+    final nextMonth = months[1];
     final transferTx = Transaction(
-      title: 'Перенос с ${_getMonthNameInNominative(_currentMonth)}',
+      title: 'Перенос с ${_getMonthNameInNominative(currentMonth)}',
       income: balance > 0 ? balance : 0.0,
       expense: balance < 0 ? -balance : 0.0,
-      date: DateTime(_nextMonth.year, _nextMonth.month, 1),
+      date: DateTime(nextMonth.year, nextMonth.month, 1),
     );
 
     setState(() { _transactions.add(transferTx); });
     _saveTransactions();
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Итог за ${_getMonthNameInNominative(_currentMonth)} перенесён в ${_getMonthNameInNominative(_nextMonth)}')),
+      SnackBar(content: Text('Итог за ${_getMonthNameInNominative(currentMonth)} перенесён в ${_getMonthNameInNominative(nextMonth)}')),
     );
   }
 
-  // Форматирует месяц как "Январь 2025"
-  String _getMonthNameInNominative(DateTime date) {
-    return '${DateFormat('MMMM', 'ru_RU').format(date)} ${date.year}';
-  }
-
-  // === ВИДЖЕТ ПОСТОЯННОЙ ЗАПИСИ ===
+  // === ВИДЖЕТЫ ===
   Widget _buildRecurringItem(Transaction tx, bool isIncome) {
     final txBalance = tx.income - tx.expense;
     return Card(
@@ -617,7 +603,6 @@ class _BudgetPageState extends State<BudgetPage> {
     );
   }
 
-  // === СЕКЦИЯ ПОСТОЯННЫХ ЗАПИСЕЙ ДЛЯ МЕСЯЦА ===
   List<Widget> _buildRecurringSection(DateTime month) {
     final recurringItems = [
       ..._recurringIncomes.map((tx) => _buildRecurringItem(Transaction(
@@ -635,7 +620,6 @@ class _BudgetPageState extends State<BudgetPage> {
     ];
   }
 
-  // === МЕНЮ ДЕЙСТВИЙ НАД ТРАНЗАКЦИЕЙ ===
   void _showTransactionActions(Transaction tx) {
     showModalBottomSheet(
       context: context,
@@ -664,15 +648,13 @@ class _BudgetPageState extends State<BudgetPage> {
     );
   }
 
-  // === СЕКЦИЯ ДЛЯ ОДНОГО МЕСЯЦА (С DRAG-AND-DROP) ===
+  // === СЕКЦИЯ ОДНОГО МЕСЯЦА ===
   Widget _buildMonthSection(DateTime month, String title) {
-    // Получаем записи для этого месяца и сортируем по order
     final monthTransactions = _transactions
         .where((tx) => tx.date.year == month.year && tx.date.month == month.month && !tx.isRecurring)
         .toList()
       ..sort((a, b) => a.order.compareTo(b.order));
 
-    // Вычисляем итог для этого месяца (включая постоянные записи)
     final allForBalance = [
       ...monthTransactions,
       ..._recurringIncomes.map((tx) => Transaction(title: tx.title, income: tx.income, expense: 0, date: month, isRecurring: true)),
@@ -680,11 +662,9 @@ class _BudgetPageState extends State<BudgetPage> {
     ];
     final balance = allForBalance.fold(0.0, (sum, tx) => sum + tx.income - tx.expense);
 
-    // Формируем список виджетов для ReorderableListView
     final allWidgets = [
       ..._buildRecurringSection(month),
       if (monthTransactions.isEmpty)
-        // 🔑 ОБЯЗАТЕЛЬНО: key для placeholder'а!
         Center(
           key: const ValueKey('no_transactions_placeholder'),
           child: Padding(
@@ -695,7 +675,6 @@ class _BudgetPageState extends State<BudgetPage> {
       else
         for (int i = 0; i < monthTransactions.length; i++)
           Card(
-            // 🔑 Уникальный key для каждой транзакции
             key: ValueKey('tx_${monthTransactions[i].date.millisecondsSinceEpoch}_${monthTransactions[i].title}_${monthTransactions[i].order}'),
             margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
             child: ListTile(
@@ -751,24 +730,21 @@ class _BudgetPageState extends State<BudgetPage> {
                 if (newIndex > oldIndex) newIndex -= 1;
                 if (newIndex < 0 || newIndex >= monthTransactions.length) return;
 
-                // Перемещаем элемент в локальном списке
                 final item = monthTransactions.removeAt(oldIndex);
                 monthTransactions.insert(newIndex, item);
 
-                // Обновляем order у всех записей в этом месяце
                 for (int i = 0; i < monthTransactions.length; i++) {
                   monthTransactions[i].order = i;
                 }
 
-                // Обновляем ГЛОБАЛЬНЫЙ список: удаляем старые и добавляем обновлённые
                 _transactions.removeWhere((tx) =>
                     tx.date.year == month.year && tx.date.month == month.month && !tx.isRecurring);
                 _transactions.addAll(monthTransactions);
 
-                _saveTransactions(); // Сохраняем изменения
+                _saveTransactions();
               });
             },
-            children: allWidgets, // ✅ Все элементы имеют уникальный key
+            children: allWidgets,
           ),
         ),
         Padding(
@@ -792,7 +768,19 @@ class _BudgetPageState extends State<BudgetPage> {
     );
   }
 
-  // === ГЛАВНЫЙ МЕТОД ОТОБРАЖЕНИЯ ===
+  // === СТРАНИЦА ДЛЯ PAGEVIEW ===
+  Widget _buildPage(int pageIndex) {
+    final months = _getMonthsForPage(pageIndex);
+    return Row(
+      children: [
+        Expanded(child: _buildMonthSection(months[0], 'Месяц 1')),
+        const VerticalDivider(width: 1, thickness: 1),
+        Expanded(child: _buildMonthSection(months[1], 'Месяц 2')),
+      ],
+    );
+  }
+
+  // === ГЛАВНЫЙ BUILD ===
   @override
   Widget build(BuildContext context) {
     if (!_isInitialized) {
@@ -803,17 +791,7 @@ class _BudgetPageState extends State<BudgetPage> {
       appBar: AppBar(
         title: const Text('Бюджет'),
         centerTitle: true,
-        // Кнопка "Назад" для перехода к предыдущей паре месяцев
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back),
-          onPressed: _moveToPreviousPair,
-        ),
         actions: [
-          // Кнопка "Вперёд"
-          IconButton(
-            icon: const Icon(Icons.arrow_forward),
-            onPressed: _moveToNextPair,
-          ),
           IconButton(icon: const Icon(Icons.upload_file), onPressed: _importFromCSV, tooltip: 'Импорт из CSV'),
           IconButton(icon: const Icon(Icons.download), onPressed: _exportToCSV, tooltip: 'Экспорт в CSV'),
           PopupMenuButton<String>(
@@ -824,7 +802,6 @@ class _BudgetPageState extends State<BudgetPage> {
               const PopupMenuItem(value: 'clear', child: Text('Очистить все данные')),
             ],
           ),
-          // Кнопка переноса итога
           IconButton(
             icon: const Icon(Icons.swap_horiz),
             onPressed: _shiftCurrentMonthForward,
@@ -834,7 +811,7 @@ class _BudgetPageState extends State<BudgetPage> {
       ),
       body: Column(
         children: [
-          // Панель добавления постоянной записи
+          // Панель постоянных записей
           Padding(
             padding: const EdgeInsets.all(8.0),
             child: Row(
@@ -864,7 +841,7 @@ class _BudgetPageState extends State<BudgetPage> {
 
           const Divider(),
 
-          // Панель добавления обычной транзакции
+          // Панель обычных транзакций
           if (!_isEditingRecurring)
             Padding(
               padding: const EdgeInsets.all(16.0),
@@ -883,13 +860,20 @@ class _BudgetPageState extends State<BudgetPage> {
               ),
             ),
 
-          // ДВА МЕСЯЦА РЯДОМ
+          // ✅ PAGEVIEW ДЛЯ СВАЙПА МЕЖДУ ПАРАМИ МЕСЯЦЕВ
           Expanded(
-            child: Row(
+            child: PageView(
+              controller: _pageController,
+              onPageChanged: (index) {
+                setState(() {
+                  _currentPageIndex = index;
+                });
+              },
               children: [
-                Expanded(child: _buildMonthSection(_currentMonth, 'Текущий месяц')),
-                const VerticalDivider(width: 1, thickness: 1),
-                Expanded(child: _buildMonthSection(_nextMonth, 'Следующий месяц')),
+                // Бесконечная прокрутка: показываем 3 страницы (прошлая, текущая, будущая)
+                _buildPage(-1),
+                _buildPage(0),
+                _buildPage(1),
               ],
             ),
           ),
