@@ -1,4 +1,4 @@
-import 'dart:convert'; // <-- ДОБАВЛЕНО для UTF-8
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 
@@ -22,6 +22,7 @@ class Transaction {
   DateTime date;
   bool isRecurring;
   int order;
+  DateTime? plannedDate;
 
   Transaction({
     required this.title,
@@ -30,15 +31,21 @@ class Transaction {
     required this.date,
     this.isRecurring = false,
     this.order = 0,
+    this.plannedDate,
   });
 
   String toStorageString() {
-    return '${date.millisecondsSinceEpoch}|$title|$income|$expense|$isRecurring|$order';
+    final plannedDateStr = plannedDate?.millisecondsSinceEpoch.toString() ?? '';
+    return '${date.millisecondsSinceEpoch}|$title|$income|$expense|$isRecurring|$order|$plannedDateStr';
   }
 
   static Transaction fromStorageString(String s) {
     final parts = s.split('|');
     final order = parts.length > 5 ? int.tryParse(parts[5]) ?? 0 : 0;
+    DateTime? plannedDate;
+    if (parts.length > 6 && parts[6].isNotEmpty) {
+      plannedDate = DateTime.fromMillisecondsSinceEpoch(int.parse(parts[6]));
+    }
     return Transaction(
       date: DateTime.fromMillisecondsSinceEpoch(int.parse(parts[0])),
       title: parts[1],
@@ -46,6 +53,7 @@ class Transaction {
       expense: double.parse(parts[3]),
       isRecurring: parts.length > 4 ? parts[4] == 'true' : false,
       order: order,
+      plannedDate: plannedDate,
     );
   }
 }
@@ -77,23 +85,21 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
   final List<Transaction> _transactions = [];
   final List<Transaction> _recurringExpenses = [];
   final List<Transaction> _recurringIncomes = [];
-
   final TextEditingController _titleController = TextEditingController();
   final TextEditingController _incomeController = TextEditingController();
   final TextEditingController _expenseController = TextEditingController();
   DateTime _selectedDate = DateTime.now();
-
+  DateTime? _plannedDate;
   final TextEditingController _recTitleController = TextEditingController();
   final TextEditingController _recAmountController = TextEditingController();
   bool _isRecurringIncome = true;
-
   bool _isEditingRecurring = false;
   int? _editingRecurringIndex;
   bool _isEditingRecurringIsIncome = true;
-
   late TabController _tabController;
   List<DateTime> _months = [];
   bool _isInitialized = false;
+  Map<String, bool> _recurringCheckboxStates = {};
 
   @override
   void initState() {
@@ -111,9 +117,26 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
       _tabController.index = currentIndex;
     }
     _tabController.addListener(_handleTabChange);
+    _initializeCheckboxStates();
     setState(() {
       _isInitialized = true;
     });
+  }
+
+  void _initializeCheckboxStates() {
+    _recurringCheckboxStates.clear();
+    for (final tx in _recurringIncomes) {
+      final key = _getRecurringKey(tx, true);
+      _recurringCheckboxStates[key] = false;
+    }
+    for (final tx in _recurringExpenses) {
+      final key = _getRecurringKey(tx, false);
+      _recurringCheckboxStates[key] = false;
+    }
+  }
+
+  String _getRecurringKey(Transaction tx, bool isIncome) {
+    return '${isIncome ? 'inc' : 'exp'}_${tx.title}_${tx.income}_${tx.expense}';
   }
 
   void _handleTabChange() {
@@ -171,9 +194,13 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
   void _buildMonthTabs() {
     final now = DateTime.now();
     final currentYear = now.year;
-    _months = List.generate(12, (index) {
-      return DateTime(currentYear, index + 1, 1);
-    });
+    _months = [];
+    // ✅ Продлено до 2030 года
+    for (int year = currentYear; year <= 2030; year++) {
+      for (int month = 1; month <= 12; month++) {
+        _months.add(DateTime(year, month, 1));
+      }
+    }
   }
 
   int _daysInMonth(int year, int month) {
@@ -196,9 +223,23 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
     return DateTime(year, month, newDay);
   }
 
-  // ✅ ФОРМАТ МЕСЯЦА: "январь", "февраль" (именительный падеж, строчные)
   String _formatMonthName(DateTime date) {
     return DateFormat('MMMM', 'ru_RU').format(date).toLowerCase();
+  }
+
+  Future<void> _selectPlannedDate() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _plannedDate ?? DateTime.now(),
+      firstDate: DateTime(2020),
+      lastDate: DateTime(2030),
+      locale: const Locale('ru'),
+    );
+    if (picked != null) {
+      setState(() {
+        _plannedDate = picked;
+      });
+    }
   }
 
   Future<void> _selectDate() async {
@@ -249,12 +290,14 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
               ? _selectedDate
               : DateTime(currentMonth.year, currentMonth.month, day),
           order: maxOrder + 1,
+          plannedDate: _plannedDate,
         ),
       );
       _titleController.clear();
       _incomeController.clear();
       _expenseController.clear();
       _selectedDate = DateTime.now();
+      _plannedDate = null;
     });
     _saveTransactions();
   }
@@ -285,6 +328,8 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
       }
       _recTitleController.clear();
       _recAmountController.clear();
+      final key = _getRecurringKey(tx, _isRecurringIncome);
+      _recurringCheckboxStates[key] = false;
     });
     _saveTransactions();
   }
@@ -292,7 +337,6 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
   void _editRecurring(int index, bool isIncome) {
     final list = isIncome ? _recurringIncomes : _recurringExpenses;
     final tx = list[index];
-
     _recTitleController.text = tx.title;
     _recAmountController.text = (isIncome ? tx.income : tx.expense).toString();
     _isRecurringIncome = isIncome;
@@ -303,7 +347,6 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
 
   void _saveRecurringEdit() {
     if (_editingRecurringIndex == null) return;
-
     final title = _recTitleController.text.trim();
     final amount = double.tryParse(_recAmountController.text) ?? 0.0;
     if (title.isEmpty || amount <= 0) {
@@ -357,11 +400,69 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
     _saveTransactions();
   }
 
-  // ✅ НОВЫЙ МЕТОД: ПЕРЕНОС В СЛЕДУЮЩИЙ МЕСЯЦ
+  void _resetRecurringForCurrentMonth() {
+    final currentMonth = _months[_tabController.index];
+    final checkedKeys = _recurringCheckboxStates.entries
+        .where((entry) => entry.value)
+        .map((entry) => entry.key)
+        .toList();
+
+    if (checkedKeys.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Выберите записи для обнуления')),
+      );
+      return;
+    }
+
+    double totalResetAmount = 0.0;
+
+    for (final key in checkedKeys.where((k) => k.startsWith('inc_'))) {
+      final parts = key.split('_');
+      if (parts.length >= 4) {
+        final title = parts[1];
+        final amount = double.tryParse(parts[2]) ?? 0.0;
+        final compensationTx = Transaction(
+          title: 'Обнуление: $title',
+          income: -amount,
+          expense: 0.0,
+          date: DateTime(currentMonth.year, currentMonth.month, DateTime.now().day),
+          isRecurring: false,
+        );
+        _transactions.add(compensationTx);
+        totalResetAmount -= amount;
+      }
+    }
+
+    for (final key in checkedKeys.where((k) => k.startsWith('exp_'))) {
+      final parts = key.split('_');
+      if (parts.length >= 4) {
+        final title = parts[1];
+        final amount = double.tryParse(parts[3]) ?? 0.0;
+        final compensationTx = Transaction(
+          title: 'Обнуление: $title',
+          income: 0.0,
+          expense: -amount,
+          date: DateTime(currentMonth.year, currentMonth.month, DateTime.now().day),
+          isRecurring: false,
+        );
+        _transactions.add(compensationTx);
+        totalResetAmount += amount;
+      }
+    }
+
+    for (final key in checkedKeys) {
+      _recurringCheckboxStates[key] = false;
+    }
+
+    _saveTransactions();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Обнуление выполнено. Скорректировано на ${totalResetAmount.toStringAsFixed(2)} ₽')),
+    );
+  }
+
   void _moveTransactionToNextMonth(Transaction tx) {
     final currentMonth = _months[_tabController.index];
     final nextMonth = _addMonths(currentMonth, 1);
-
     final newDay = math.min(tx.date.day, _daysInMonth(nextMonth.year, nextMonth.month));
     final newTx = Transaction(
       title: tx.title,
@@ -370,6 +471,7 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
       date: DateTime(nextMonth.year, nextMonth.month, newDay),
       isRecurring: tx.isRecurring,
       order: tx.order,
+      plannedDate: tx.plannedDate,
     );
 
     setState(() {
@@ -377,16 +479,14 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
       _transactions.add(newTx);
     });
     _saveTransactions();
-
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text('Запись перенесена в ${_formatMonthName(nextMonth)}')),
     );
   }
 
-  // ОСТАВЛЕН ДЛЯ МЕНЮ "ПЕРЕНЕСТИ В ДРУГОЙ МЕСЯЦ"
   Future<void> _moveTransactionToAnotherMonth(Transaction tx) async {
     final now = DateTime.now();
-    final months = List.generate(12, (i) => DateTime(now.year, i + 1, 1));
+    final months = List.generate(36, (i) => DateTime(now.year + (i ~/ 12), (i % 12) + 1, 1));
 
     final result = await showDialog<DateTime?>(
       context: context,
@@ -401,7 +501,7 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
                 children: [
                   for (var month in months)
                     ListTile(
-                      title: Text(_formatMonthName(month)),
+                      title: Text('${_formatMonthName(month)} ${month.year}'),
                       onTap: () => Navigator.of(ctx).pop(month),
                     ),
                 ],
@@ -428,6 +528,7 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
       date: DateTime(result.year, result.month, newDay),
       isRecurring: tx.isRecurring,
       order: tx.order,
+      plannedDate: tx.plannedDate,
     );
 
     setState(() {
@@ -435,9 +536,8 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
       _transactions.add(newTx);
     });
     _saveTransactions();
-
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Запись перенесена в ${_formatMonthName(result)}')),
+      SnackBar(content: Text('Запись перенесена в ${_formatMonthName(result)} ${result.year}')),
     );
   }
 
@@ -465,6 +565,7 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
         _transactions.clear();
         _recurringExpenses.clear();
         _recurringIncomes.clear();
+        _recurringCheckboxStates.clear();
       });
       await _saveTransactions();
       ScaffoldMessenger.of(context).showSnackBar(
@@ -473,11 +574,10 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
     }
   }
 
-  // ✅ ЭКСПОРТ С UTF-8 BOM (чтобы Excel читал кириллицу)
   Future<void> _exportToCSV() async {
     try {
       final buffer = StringBuffer();
-      buffer.writeln('"Дата","Название","Доход","Расход","Постоянная"');
+      buffer.writeln('"Дата","Название","Доход","Расход","Постоянная","Запланировано"');
 
       final allTxs = [
         ..._transactions,
@@ -499,18 +599,19 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
 
       for (final tx in allTxs) {
         final dateStr = DateFormat('dd.MM.yyyy', 'ru_RU').format(tx.date);
+        final plannedStr = tx.plannedDate != null 
+            ? DateFormat('dd.MM.yyyy', 'ru_RU').format(tx.plannedDate!)
+            : '';
         buffer.writeln(
-          '"$dateStr","${tx.title}","${tx.income}","${tx.expense}","${tx.isRecurring ? 'Да' : 'Нет'}"',
+          '"$dateStr","${tx.title}","${tx.income}","${tx.expense}","${tx.isRecurring ? 'Да' : 'Нет'}","$plannedStr"',
         );
       }
 
       final dir = await getApplicationDocumentsDirectory();
       final file = File('${dir.path}/budget_export.csv');
-
-      // ✅ ДОБАВЛЕН BOM ДЛЯ EXCEL
       final content = buffer.toString();
       final bytes = utf8.encode(content);
-      final bom = [0xEF, 0xBB, 0xBF]; // UTF-8 BOM
+      final bom = [0xEF, 0xBB, 0xBF];
       await file.writeAsBytes(bom + bytes);
 
       ScaffoldMessenger.of(context).showSnackBar(
@@ -529,12 +630,10 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
         type: FileType.custom,
         allowedExtensions: ['csv'],
       );
-
       if (result == null) return;
 
       final file = File(result.files.single.path!);
       final lines = await file.readAsLines();
-
       if (lines.isEmpty) return;
 
       final List<Transaction> newTransactions = [];
@@ -548,7 +647,6 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
         } else {
           cells = lines[i].split(',');
         }
-
         if (cells.length < 5) continue;
 
         final dateStr = cells[0].trim().replaceAll('"', '');
@@ -556,8 +654,11 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
         final income = double.tryParse(cells[2].trim()) ?? 0.0;
         final expense = double.tryParse(cells[3].trim()) ?? 0.0;
         final isRecurring = cells[4].trim().replaceAll('"', '').toLowerCase() == 'да';
+        final plannedStr = cells.length > 5 ? cells[5].trim().replaceAll('"', '') : '';
 
         DateTime? date;
+        DateTime? plannedDate;
+
         try {
           if (dateStr.contains('.')) {
             date = DateFormat('dd.MM.yyyy', 'ru_RU').parse(dateStr);
@@ -565,6 +666,14 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
             date = DateFormat('yyyy-MM-dd').parse(dateStr);
           } else {
             continue;
+          }
+
+          if (plannedStr.isNotEmpty) {
+            if (plannedStr.contains('.')) {
+              plannedDate = DateFormat('dd.MM.yyyy', 'ru_RU').parse(plannedStr);
+            } else if (plannedStr.contains('-')) {
+              plannedDate = DateFormat('yyyy-MM-dd').parse(plannedStr);
+            }
           }
         } catch (e) {
           continue;
@@ -596,6 +705,7 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
             date: date,
             isRecurring: false,
             order: newTransactions.length,
+            plannedDate: plannedDate,
           ));
         }
       }
@@ -607,8 +717,8 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
         _recurringIncomes.addAll(newRecurringIncomes);
         _recurringExpenses.clear();
         _recurringExpenses.addAll(newRecurringExpenses);
+        _initializeCheckboxStates();
       });
-
       await _saveTransactions();
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Данные успешно импортированы из CSV')),
@@ -620,9 +730,16 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
     }
   }
 
-  // ✅ ПЕРЕНОС ИТОГА ТЕКУЩЕГО МЕСЯЦА В СЛЕДУЮЩИЙ
   void _shiftCurrentMonthForward() {
     final currentMonth = _months[_tabController.index];
+    // ✅ Изменено: до 2030 года
+    if (currentMonth.year > 2030) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Перенос итога доступен только до 2030 года')),
+      );
+      return;
+    }
+
     final currentTransactions = _transactions.where((tx) =>
         tx.date.year == currentMonth.year &&
         tx.date.month == currentMonth.month
@@ -636,6 +753,7 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
     }
 
     final balance = currentTransactions.fold(0.0, (sum, tx) => sum + tx.income - tx.expense);
+
     if (balance == 0) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Итог = 0, перенос не требуется')),
@@ -645,7 +763,7 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
 
     final nextMonth = _addMonths(currentMonth, 1);
     final transferTx = Transaction(
-      title: 'Перенос с ${_formatMonthName(currentMonth)}',
+      title: 'Перенос с ${_formatMonthName(currentMonth)} ${currentMonth.year}',
       income: balance > 0 ? balance : 0.0,
       expense: balance < 0 ? -balance : 0.0,
       date: DateTime(nextMonth.year, nextMonth.month, 1),
@@ -662,12 +780,19 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
 
   Widget _buildRecurringItem(Transaction tx, bool isIncome) {
     final txBalance = tx.income - tx.expense;
-    final key = ValueKey('recurring_${isIncome ? 'inc' : 'exp'}_${tx.title}_${tx.income}_${tx.expense}');
+    final key = _getRecurringKey(tx, isIncome);
     return Card(
-      key: key,
+      key: ValueKey(key),
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
       child: ListTile(
-        leading: const Icon(Icons.repeat, color: Colors.grey),
+        leading: Checkbox(
+          value: _recurringCheckboxStates[key] ?? false,
+          onChanged: (value) {
+            setState(() {
+              _recurringCheckboxStates[key] = value ?? false;
+            });
+          },
+        ),
         title: Text(tx.title),
         subtitle: Text(DateFormat('dd MMMM yyyy', 'ru_RU').format(tx.date)),
         trailing: Row(
@@ -694,19 +819,6 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
             ),
             const SizedBox(width: 12),
             IconButton(
-              icon: const Icon(Icons.edit, size: 18, color: Colors.blue),
-              onPressed: () {
-                final index = isIncome
-                    ? _recurringIncomes.indexWhere((r) =>
-                        r.title == tx.title && r.income == tx.income)
-                    : _recurringExpenses.indexWhere((r) =>
-                        r.title == tx.title && r.expense == tx.expense);
-                if (index != -1) {
-                  _editRecurring(index, isIncome);
-                }
-              },
-            ),
-            IconButton(
               icon: const Icon(Icons.delete, size: 18, color: Colors.red),
               onPressed: () {
                 final index = isIncome
@@ -716,6 +828,7 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
                         r.title == tx.title && r.expense == tx.expense);
                 if (index != -1) {
                   _deleteRecurring(index, isIncome);
+                  _recurringCheckboxStates.remove(key);
                 }
               },
             ),
@@ -746,11 +859,32 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
         );
       }).map((tx) => _buildRecurringItem(tx, false)),
     ];
+
     if (recurringItems.isEmpty) {
       return [];
     }
+
+    // ✅ Все виджеты имеют ключи
     return [
       const Divider(key: ValueKey('divider_recurring'), height: 1, thickness: 1),
+      Padding(
+        key: const ValueKey('recurring_header'),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        child: Row(
+          children: [
+            const Text('Постоянные записи', style: TextStyle(fontWeight: FontWeight.bold)),
+            const Spacer(),
+            ElevatedButton(
+              onPressed: _resetRecurringForCurrentMonth,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.orange,
+                foregroundColor: Colors.white,
+              ),
+              child: const Text('Обнулить выбранные'),
+            ),
+          ],
+        ),
+      ),
       ...recurringItems,
       const SizedBox(key: ValueKey('spacer_after_recurring'), height: 8),
     ];
@@ -854,6 +988,7 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
 
     final balanceCurrent = [...regularTransactionsCurrent, ...recurringExpensesCurrent, ...recurringIncomesCurrent]
         .fold(0.0, (sum, tx) => sum + tx.income - tx.expense);
+
     final balanceNext = [...regularTransactionsNext, ...recurringExpensesNext, ...recurringIncomesNext]
         .fold(0.0, (sum, tx) => sum + tx.income - tx.expense);
 
@@ -867,7 +1002,7 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
             controller: _tabController,
             isScrollable: true,
             tabs: _months.map((month) {
-              return Tab(text: DateFormat('MMM yyyy', 'ru_RU').format(month));
+              return Tab(text: '${DateFormat('MMM', 'ru_RU').format(month)} ${month.year}');
             }).toList(),
           ),
           actions: [
@@ -894,6 +1029,8 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
                 ),
               ],
             ),
+            // ✅ Кнопка активна до 2030 года
+            if (currentMonth.year <= 2030)
             IconButton(
               icon: const Icon(Icons.arrow_forward),
               onPressed: _shiftCurrentMonthForward,
@@ -952,52 +1089,82 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
                 ],
               ),
             ),
-
             const Divider(),
-
             if (!_isEditingRecurring)
               Padding(
                 padding: const EdgeInsets.all(16.0),
-                child: Row(
+                child: Column(
                   children: [
-                    Expanded(
-                      child: TextField(
-                        controller: _titleController,
-                        decoration: const InputDecoration(hintText: 'Название'),
-                      ),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: TextField(
+                            controller: _titleController,
+                            decoration: const InputDecoration(hintText: 'Название'),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        SizedBox(
+                          width: 80,
+                          child: TextField(
+                            controller: _incomeController,
+                            keyboardType: TextInputType.number,
+                            decoration: const InputDecoration(hintText: 'Доход'),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        SizedBox(
+                          width: 80,
+                          child: TextField(
+                            controller: _expenseController,
+                            keyboardType: TextInputType.number,
+                            decoration: const InputDecoration(hintText: 'Расход'),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        TextButton(
+                          onPressed: _selectDate,
+                          child: Text(DateFormat('dd.MM', 'ru_RU').format(_selectedDate)),
+                        ),
+                        const SizedBox(width: 8),
+                        ElevatedButton(
+                          onPressed: _addTransaction,
+                          child: const Icon(Icons.add),
+                        ),
+                      ],
                     ),
-                    const SizedBox(width: 8),
-                    SizedBox(
-                      width: 80,
-                      child: TextField(
-                        controller: _incomeController,
-                        keyboardType: TextInputType.number,
-                        decoration: const InputDecoration(hintText: 'Доход'),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    SizedBox(
-                      width: 80,
-                      child: TextField(
-                        controller: _expenseController,
-                        keyboardType: TextInputType.number,
-                        decoration: const InputDecoration(hintText: 'Расход'),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    TextButton(
-                      onPressed: _selectDate,
-                      child: Text(DateFormat('dd.MM', 'ru_RU').format(_selectedDate)),
-                    ),
-                    const SizedBox(width: 8),
-                    ElevatedButton(
-                      onPressed: _addTransaction,
-                      child: const Icon(Icons.add),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        const Text('Запланировано:'),
+                        const SizedBox(width: 8),
+                        TextButton(
+                          onPressed: _selectPlannedDate,
+                          child: Text(
+                            _plannedDate != null 
+                                ? DateFormat('dd.MM.yyyy', 'ru_RU').format(_plannedDate!)
+                                : 'Выбрать дату',
+                            style: TextStyle(
+                              color: _plannedDate != null ? Colors.blue : Colors.grey,
+                            ),
+                          ),
+                        ),
+                        if (_plannedDate != null) ...[
+                          const SizedBox(width: 8),
+                          IconButton(
+                            icon: const Icon(Icons.clear, size: 18),
+                            onPressed: () {
+                              setState(() {
+                                _plannedDate = null;
+                              });
+                            },
+                          ),
+                        ],
+                      ],
                     ),
                   ],
                 ),
               ),
-
             Expanded(
               child: Row(
                 children: [
@@ -1008,7 +1175,7 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
                         Padding(
                           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                           child: Text(
-                            _formatMonthName(currentMonth),
+                            '${_formatMonthName(currentMonth)} ${currentMonth.year}',
                             style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
                           ),
                         ),
@@ -1019,20 +1186,16 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
                               if (regularTransactionsCurrent.isEmpty) return;
                               if (oldIndex < 0 || oldIndex >= regularTransactionsCurrent.length) return;
                               if (newIndex < 0 || newIndex > regularTransactionsCurrent.length) return;
-
                               setState(() {
                                 if (newIndex > oldIndex) {
                                   newIndex -= 1;
                                 }
                                 if (newIndex < 0 || newIndex >= regularTransactionsCurrent.length) return;
-
                                 final item = regularTransactionsCurrent.removeAt(oldIndex);
                                 regularTransactionsCurrent.insert(newIndex, item);
-
                                 for (int i = 0; i < regularTransactionsCurrent.length; i++) {
                                   regularTransactionsCurrent[i].order = i;
                                 }
-
                                 _transactions.removeWhere((tx) =>
                                     tx.date.year == currentMonth.year &&
                                     tx.date.month == currentMonth.month &&
@@ -1058,22 +1221,35 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
                                     margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
                                     child: ListTile(
                                       title: Text(regularTransactionsCurrent[i].title),
-                                      subtitle: Text(
-                                        DateFormat('dd MMMM yyyy', 'ru_RU').format(regularTransactionsCurrent[i].date),
-                                        style: TextStyle(
-                                          color: regularTransactionsCurrent[i].date.isBefore(today) ||
-                                                  (regularTransactionsCurrent[i].date.day == today.day &&
-                                                      regularTransactionsCurrent[i].date.month == today.month &&
-                                                      regularTransactionsCurrent[i].date.year == today.year)
-                                              ? Colors.red
-                                              : null,
-                                          fontWeight: regularTransactionsCurrent[i].date.isBefore(today) ||
-                                                  (regularTransactionsCurrent[i].date.day == today.day &&
-                                                      regularTransactionsCurrent[i].date.month == today.month &&
-                                                      regularTransactionsCurrent[i].date.year == today.year)
-                                              ? FontWeight.bold
-                                              : null,
-                                        ),
+                                      subtitle: Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            DateFormat('dd MMMM yyyy', 'ru_RU').format(regularTransactionsCurrent[i].date),
+                                            style: TextStyle(
+                                              color: regularTransactionsCurrent[i].date.isBefore(today) ||
+                                                      (regularTransactionsCurrent[i].date.day == today.day &&
+                                                          regularTransactionsCurrent[i].date.month == today.month &&
+                                                          regularTransactionsCurrent[i].date.year == today.year)
+                                                  ? Colors.red
+                                                  : null,
+                                              fontWeight: regularTransactionsCurrent[i].date.isBefore(today) ||
+                                                      (regularTransactionsCurrent[i].date.day == today.day &&
+                                                          regularTransactionsCurrent[i].date.month == today.month &&
+                                                          regularTransactionsCurrent[i].date.year == today.year)
+                                                  ? FontWeight.bold
+                                                  : null,
+                                            ),
+                                          ),
+                                          if (regularTransactionsCurrent[i].plannedDate != null)
+                                            Text(
+                                              'Запланировано: ${DateFormat('dd.MM.yyyy', 'ru_RU').format(regularTransactionsCurrent[i].plannedDate!)}',
+                                              style: const TextStyle(
+                                                color: Colors.blue,
+                                                fontSize: 12,
+                                              ),
+                                            ),
+                                        ],
                                       ),
                                       trailing: Row(
                                         mainAxisSize: MainAxisSize.min,
@@ -1100,7 +1276,6 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
                                             ],
                                           ),
                                           const SizedBox(width: 12),
-                                          // ✅ ДОБАВЛЕНА КНОПКА →
                                           if (!regularTransactionsCurrent[i].isRecurring)
                                             IconButton(
                                               icon: const Icon(Icons.arrow_forward, size: 18, color: Colors.blue),
@@ -1109,8 +1284,9 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
                                             ),
                                           if (!regularTransactionsCurrent[i].isRecurring)
                                             IconButton(
-                                              icon: const Icon(Icons.more_vert),
-                                              onPressed: () => _showTransactionActions(regularTransactionsCurrent[i]),
+                                              icon: const Icon(Icons.delete, size: 18, color: Colors.red),
+                                              onPressed: () => _deleteTransaction(regularTransactionsCurrent[i]),
+                                              tooltip: 'Удалить',
                                             )
                                           else
                                             const SizedBox(),
@@ -1141,9 +1317,7 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
                       ],
                     ),
                   ),
-
                   const VerticalDivider(width: 1, thickness: 1),
-
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1151,7 +1325,7 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
                         Padding(
                           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                           child: Text(
-                            _formatMonthName(nextMonth),
+                            '${_formatMonthName(nextMonth)} ${nextMonth.year}',
                             style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
                           ),
                         ),
@@ -1162,20 +1336,16 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
                               if (regularTransactionsNext.isEmpty) return;
                               if (oldIndex < 0 || oldIndex >= regularTransactionsNext.length) return;
                               if (newIndex < 0 || newIndex > regularTransactionsNext.length) return;
-
                               setState(() {
                                 if (newIndex > oldIndex) {
                                   newIndex -= 1;
                                 }
                                 if (newIndex < 0 || newIndex >= regularTransactionsNext.length) return;
-
                                 final item = regularTransactionsNext.removeAt(oldIndex);
                                 regularTransactionsNext.insert(newIndex, item);
-
                                 for (int i = 0; i < regularTransactionsNext.length; i++) {
                                   regularTransactionsNext[i].order = i;
                                 }
-
                                 _transactions.removeWhere((tx) =>
                                     tx.date.year == nextMonth.year &&
                                     tx.date.month == nextMonth.month &&
@@ -1201,8 +1371,21 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
                                     margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
                                     child: ListTile(
                                       title: Text(regularTransactionsNext[i].title),
-                                      subtitle: Text(
-                                        DateFormat('dd MMMM yyyy', 'ru_RU').format(regularTransactionsNext[i].date),
+                                      subtitle: Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            DateFormat('dd MMMM yyyy', 'ru_RU').format(regularTransactionsNext[i].date),
+                                          ),
+                                          if (regularTransactionsNext[i].plannedDate != null)
+                                            Text(
+                                              'Запланировано: ${DateFormat('dd.MM.yyyy', 'ru_RU').format(regularTransactionsNext[i].plannedDate!)}',
+                                              style: const TextStyle(
+                                                color: Colors.blue,
+                                                fontSize: 12,
+                                              ),
+                                            ),
+                                        ],
                                       ),
                                       trailing: Row(
                                         mainAxisSize: MainAxisSize.min,
@@ -1231,8 +1414,9 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
                                           const SizedBox(width: 12),
                                           if (!regularTransactionsNext[i].isRecurring)
                                             IconButton(
-                                              icon: const Icon(Icons.more_vert),
-                                              onPressed: () => _showTransactionActions(regularTransactionsNext[i]),
+                                              icon: const Icon(Icons.delete, size: 18, color: Colors.red),
+                                              onPressed: () => _deleteTransaction(regularTransactionsNext[i]),
+                                              tooltip: 'Удалить',
                                             )
                                           else
                                             const SizedBox(),
