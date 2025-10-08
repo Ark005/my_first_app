@@ -101,6 +101,9 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
   bool _isInitialized = false;
   Map<String, bool> _recurringCheckboxStates = {};
 
+  // ✅ НОВОЕ: для временного обнуления в текущем месяце
+  Map<String, bool> _recurringZeroedStates = {};
+
   @override
   void initState() {
     super.initState();
@@ -125,13 +128,16 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
 
   void _initializeCheckboxStates() {
     _recurringCheckboxStates.clear();
+    _recurringZeroedStates.clear(); // ✅ инициализируем
     for (final tx in _recurringIncomes) {
       final key = _getRecurringKey(tx, true);
       _recurringCheckboxStates[key] = false;
+      _recurringZeroedStates[key] = false;
     }
     for (final tx in _recurringExpenses) {
       final key = _getRecurringKey(tx, false);
       _recurringCheckboxStates[key] = false;
+      _recurringZeroedStates[key] = false;
     }
   }
 
@@ -195,8 +201,7 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
     final now = DateTime.now();
     final currentYear = now.year;
     _months = [];
-    // ✅ Продлено до 2030 года
-    for (int year = currentYear; year <= 2030; year++) {
+    for (int year = currentYear; year <= 2030; year++) { // ✅ до 2030
       for (int month = 1; month <= 12; month++) {
         _months.add(DateTime(year, month, 1));
       }
@@ -330,6 +335,7 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
       _recAmountController.clear();
       final key = _getRecurringKey(tx, _isRecurringIncome);
       _recurringCheckboxStates[key] = false;
+      _recurringZeroedStates[key] = false; // ✅
     });
     _saveTransactions();
   }
@@ -400,65 +406,7 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
     _saveTransactions();
   }
 
-  void _resetRecurringForCurrentMonth() {
-    final currentMonth = _months[_tabController.index];
-    final checkedKeys = _recurringCheckboxStates.entries
-        .where((entry) => entry.value)
-        .map((entry) => entry.key)
-        .toList();
-
-    if (checkedKeys.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Выберите записи для обнуления')),
-      );
-      return;
-    }
-
-    double totalResetAmount = 0.0;
-
-    for (final key in checkedKeys.where((k) => k.startsWith('inc_'))) {
-      final parts = key.split('_');
-      if (parts.length >= 4) {
-        final title = parts[1];
-        final amount = double.tryParse(parts[2]) ?? 0.0;
-        final compensationTx = Transaction(
-          title: 'Обнуление: $title',
-          income: -amount,
-          expense: 0.0,
-          date: DateTime(currentMonth.year, currentMonth.month, DateTime.now().day),
-          isRecurring: false,
-        );
-        _transactions.add(compensationTx);
-        totalResetAmount -= amount;
-      }
-    }
-
-    for (final key in checkedKeys.where((k) => k.startsWith('exp_'))) {
-      final parts = key.split('_');
-      if (parts.length >= 4) {
-        final title = parts[1];
-        final amount = double.tryParse(parts[3]) ?? 0.0;
-        final compensationTx = Transaction(
-          title: 'Обнуление: $title',
-          income: 0.0,
-          expense: -amount,
-          date: DateTime(currentMonth.year, currentMonth.month, DateTime.now().day),
-          isRecurring: false,
-        );
-        _transactions.add(compensationTx);
-        totalResetAmount += amount;
-      }
-    }
-
-    for (final key in checkedKeys) {
-      _recurringCheckboxStates[key] = false;
-    }
-
-    _saveTransactions();
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Обнуление выполнено. Скорректировано на ${totalResetAmount.toStringAsFixed(2)} ₽')),
-    );
-  }
+  // ✅ УДАЛЯЕМ старый метод _resetRecurringForCurrentMonth — он больше не нужен
 
   void _moveTransactionToNextMonth(Transaction tx) {
     final currentMonth = _months[_tabController.index];
@@ -566,6 +514,7 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
         _recurringExpenses.clear();
         _recurringIncomes.clear();
         _recurringCheckboxStates.clear();
+        _recurringZeroedStates.clear(); // ✅
       });
       await _saveTransactions();
       ScaffoldMessenger.of(context).showSnackBar(
@@ -732,8 +681,7 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
 
   void _shiftCurrentMonthForward() {
     final currentMonth = _months[_tabController.index];
-    // ✅ Изменено: до 2030 года
-    if (currentMonth.year > 2030) {
+    if (currentMonth.year > 2030) { // ✅ до 2030
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Перенос итога доступен только до 2030 года')),
       );
@@ -779,17 +727,22 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
   }
 
   Widget _buildRecurringItem(Transaction tx, bool isIncome) {
-    final txBalance = tx.income - tx.expense;
     final key = _getRecurringKey(tx, isIncome);
+    bool isZeroed = _recurringZeroedStates[key] ?? false;
+
+    double displayIncome = isZeroed ? 0.0 : tx.income;
+    double displayExpense = isZeroed ? 0.0 : tx.expense;
+    double displayBalance = displayIncome - displayExpense;
+
     return Card(
       key: ValueKey(key),
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
       child: ListTile(
         leading: Checkbox(
-          value: _recurringCheckboxStates[key] ?? false,
+          value: isZeroed,
           onChanged: (value) {
             setState(() {
-              _recurringCheckboxStates[key] = value ?? false;
+              _recurringZeroedStates[key] = value ?? false;
             });
           },
         ),
@@ -802,17 +755,17 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
               crossAxisAlignment: CrossAxisAlignment.end,
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                if (tx.income > 0)
-                  Text('+${tx.income.toStringAsFixed(2)} ₽',
+                if (displayIncome > 0)
+                  Text('+${displayIncome.toStringAsFixed(2)} ₽',
                       style: const TextStyle(color: Colors.green)),
-                if (tx.expense > 0)
-                  Text('-${tx.expense.toStringAsFixed(2)} ₽',
+                if (displayExpense > 0)
+                  Text('-${displayExpense.toStringAsFixed(2)} ₽',
                       style: const TextStyle(color: Colors.red)),
                 Text(
-                  'Итого: ${txBalance.toStringAsFixed(2)} ₽',
+                  'Итого: ${displayBalance.toStringAsFixed(2)} ₽',
                   style: TextStyle(
                     fontWeight: FontWeight.bold,
-                    color: txBalance >= 0 ? Colors.green : Colors.red,
+                    color: displayBalance >= 0 ? Colors.green : Colors.red,
                   ),
                 ),
               ],
@@ -829,6 +782,7 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
                 if (index != -1) {
                   _deleteRecurring(index, isIncome);
                   _recurringCheckboxStates.remove(key);
+                  _recurringZeroedStates.remove(key);
                 }
               },
             ),
@@ -864,7 +818,6 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
       return [];
     }
 
-    // ✅ Все виджеты имеют ключи
     return [
       const Divider(key: ValueKey('divider_recurring'), height: 1, thickness: 1),
       Padding(
@@ -874,14 +827,7 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
           children: [
             const Text('Постоянные записи', style: TextStyle(fontWeight: FontWeight.bold)),
             const Spacer(),
-            ElevatedButton(
-              onPressed: _resetRecurringForCurrentMonth,
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.orange,
-                foregroundColor: Colors.white,
-              ),
-              child: const Text('Обнулить выбранные'),
-            ),
+            // ✅ Кнопка "Обнулить" удалена — обнуление через чекбокс
           ],
         ),
       ),
@@ -946,20 +892,25 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
         .toList()
       ..sort((a, b) => a.order.compareTo(b.order));
 
+    // ✅ Вспомогательные списки для отображения с учётом обнуления
     final recurringExpensesCurrent = _recurringExpenses.map((tx) {
+      final key = _getRecurringKey(tx, false);
+      final isZeroed = _recurringZeroedStates[key] ?? false;
       return Transaction(
         title: tx.title,
         income: 0.0,
-        expense: tx.expense,
+        expense: isZeroed ? 0.0 : tx.expense,
         date: DateTime(currentMonth.year, currentMonth.month, 1),
         isRecurring: true,
       );
     }).toList();
 
     final recurringIncomesCurrent = _recurringIncomes.map((tx) {
+      final key = _getRecurringKey(tx, true);
+      final isZeroed = _recurringZeroedStates[key] ?? false;
       return Transaction(
         title: tx.title,
-        income: tx.income,
+        income: isZeroed ? 0.0 : tx.income,
         expense: 0.0,
         date: DateTime(currentMonth.year, currentMonth.month, 1),
         isRecurring: true,
@@ -1029,7 +980,6 @@ class _BudgetPageState extends State<BudgetPage> with TickerProviderStateMixin {
                 ),
               ],
             ),
-            // ✅ Кнопка активна до 2030 года
             if (currentMonth.year <= 2030)
             IconButton(
               icon: const Icon(Icons.arrow_forward),
